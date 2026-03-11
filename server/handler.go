@@ -3,31 +3,43 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
 )
 
+const DEFAULT_PARTITIONS = 3
+
 var (
+	// key: "topic-partition" → Log
 	logs   = make(map[string]*Log)
 	logsMu sync.Mutex
 )
 
-func getLog(topic string) (*Log, error) {
+func getLog(topic string, partition int) (*Log, error) {
 	logsMu.Lock()
 	defer logsMu.Unlock()
 
-	if l, ok := logs[topic]; ok {
+	key := fmt.Sprintf("%s-%d", topic, partition)
+	if l, ok := logs[key]; ok {
 		return l, nil
 	}
 
-	l, err := NewLog(topic)
+	l, err := NewLog(topic, partition)
 	if err != nil {
 		return nil, err
 	}
-	logs[topic] = l
+	logs[key] = l
 	return l, nil
+}
+
+// consistent hashing — same key always returns same partition
+func getPartition(key string, totalPartitions int) int {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return int(h.Sum32()) % totalPartitions
 }
 
 func handleConnection(conn net.Conn) {
@@ -36,7 +48,7 @@ func handleConnection(conn net.Conn) {
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		parts := strings.SplitN(line, " ", 3)
+		parts := strings.SplitN(line, " ", 4)
 
 		if len(parts) < 2 {
 			fmt.Fprintln(conn, "ERROR invalid command")
@@ -49,12 +61,16 @@ func handleConnection(conn net.Conn) {
 		switch command {
 
 		case "SEND":
-			if len(parts) < 3 {
-				fmt.Fprintln(conn, "ERROR missing message")
+			// SEND <topic> <key> <message>
+			if len(parts) < 4 {
+				fmt.Fprintln(conn, "ERROR usage: SEND <topic> <key> <message>")
 				continue
 			}
-			message := parts[2]
-			l, err := getLog(topic)
+			key := parts[2]
+			message := parts[3]
+
+			partition := getPartition(key, DEFAULT_PARTITIONS)
+			l, err := getLog(topic, partition)
 			if err != nil {
 				fmt.Fprintln(conn, "ERROR", err)
 				continue
@@ -64,19 +80,25 @@ func handleConnection(conn net.Conn) {
 				fmt.Fprintln(conn, "ERROR", err)
 				continue
 			}
-			fmt.Fprintln(conn, "OK", offset)
+			fmt.Fprintln(conn, "OK", partition, offset)
 
 		case "READ":
-			if len(parts) < 3 {
-				fmt.Fprintln(conn, "ERROR missing offset")
+			// READ <topic> <partition> <offset>
+			if len(parts) < 4 {
+				fmt.Fprintln(conn, "ERROR usage: READ <topic> <partition> <offset>")
 				continue
 			}
-			offset, err := strconv.Atoi(parts[2])
+			partition, err := strconv.Atoi(parts[2])
+			if err != nil {
+				fmt.Fprintln(conn, "ERROR invalid partition")
+				continue
+			}
+			offset, err := strconv.Atoi(parts[3])
 			if err != nil {
 				fmt.Fprintln(conn, "ERROR invalid offset")
 				continue
 			}
-			l, err := getLog(topic)
+			l, err := getLog(topic, partition)
 			if err != nil {
 				fmt.Fprintln(conn, "ERROR", err)
 				continue
@@ -87,6 +109,10 @@ func handleConnection(conn net.Conn) {
 				continue
 			}
 			fmt.Fprintln(conn, "MSG", msg)
+
+		case "PARTITIONS":
+			// PARTITIONS <topic>
+			fmt.Fprintln(conn, "OK", DEFAULT_PARTITIONS)
 
 		default:
 			fmt.Fprintln(conn, "ERROR unknown command")
