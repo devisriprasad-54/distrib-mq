@@ -33,6 +33,12 @@ func NewLog(topic string, partition int) (*Log, error) {
 		return nil, err
 	}
 
+	// seek to end of log file so new appends go to the correct position
+	_, err = l.file.Seek(0, 2) // 2 = seek from end
+	if err != nil {
+		return nil, err
+	}
+
 	return l, nil
 }
 

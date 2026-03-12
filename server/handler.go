@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const DEFAULT_PARTITIONS = 3
@@ -117,5 +118,73 @@ func handleConnection(conn net.Conn) {
 		default:
 			fmt.Fprintln(conn, "ERROR unknown command")
 		}
+	}
+}
+func startReplication(leaderAddr string) {
+	fmt.Println("Starting replication from", leaderAddr)
+
+	// track our offset per partition so we know what to ask for next
+	followerOffsets := make(map[string]int)
+
+	for {
+		// connect to leader
+		conn, err := net.Dial("tcp", leaderAddr)
+		if err != nil {
+			fmt.Println("Cannot reach leader, retrying in 2s...")
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		replicate(conn, followerOffsets)
+		conn.Close()
+
+		// if replicate returns, connection dropped — retry
+		fmt.Println("Lost connection to leader, retrying in 2s...")
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func replicate(conn net.Conn, followerOffsets map[string]int) {
+	scanner := bufio.NewScanner(conn)
+
+	// topics and partitions to replicate
+	// in production this comes from a metadata server
+	// for now we hardcode orders with 3 partitions
+	topics := []string{"orders"}
+	partitions := []int{0, 1, 2}
+
+	for {
+		for _, topic := range topics {
+			for _, partition := range partitions {
+				key := fmt.Sprintf("%s-%d", topic, partition)
+				offset := followerOffsets[key]
+
+				// ask leader for next message
+				fmt.Fprintf(conn, "READ %s %d %d\n", topic, partition, offset)
+
+				if !scanner.Scan() {
+					return // connection dropped
+				}
+
+				response := scanner.Text()
+				parts := strings.SplitN(response, " ", 2)
+
+				if parts[0] == "MSG" {
+					message := parts[1]
+
+					// write to our local log
+					l, err := getLog(topic, partition)
+					if err != nil {
+						fmt.Println("Replication error:", err)
+						continue
+					}
+					l.Append(message)
+					followerOffsets[key]++
+					fmt.Printf("Replicated %s partition %d offset %d\n", topic, partition, offset)
+				}
+				// if EMPTY — nothing new, move on
+			}
+		}
+		time.Sleep(100 * time.Millisecond) // poll every 100ms
 	}
 }
