@@ -1,0 +1,6 @@
+data/
+server/server
+producer/producer
+consumer/consumer
+*.log
+*.index
