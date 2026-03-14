@@ -28,6 +28,7 @@ func main() {
 		// start replication in background
 		go startReplication(leaderAddr)
 	}
+	go startHealthChecker()
 
 	listener, err := net.Listen("tcp", ":"+port)
 	if err != nil {

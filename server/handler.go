@@ -114,11 +114,70 @@ func handleConnection(conn net.Conn) {
 		case "PARTITIONS":
 			// PARTITIONS <topic>
 			fmt.Fprintln(conn, "OK", DEFAULT_PARTITIONS)
+		case "JOIN":
+			// JOIN <groupID> <consumerID>
+			if len(parts) < 3 {
+				fmt.Fprintln(conn, "ERROR usage: JOIN <groupID> <consumerID>")
+				continue
+			}
+			groupID := parts[1]
+			consumerID := parts[2]
 
-		default:
-			fmt.Fprintln(conn, "ERROR unknown command")
+			g := getGroup(groupID)
+			partition := g.join(consumerID, conn)
+			fmt.Fprintln(conn, "ASSIGNED", partition)
+
+		case "PING":
+		// PING <groupID> <consumerID>
+		if len(parts) < 3 {
+			fmt.Fprintln(conn, "ERROR usage: PING <groupID> <consumerID>")
+			continue
 		}
-	}
+		groupID := parts[1]
+		consumerID := parts[2]
+
+		g := getGroup(groupID)
+		if g.heartbeat(consumerID) {
+			fmt.Fprintln(conn, "PONG")
+		} else {
+			fmt.Fprintln(conn, "ERROR consumer not found")
+		}
+
+		case "CONSUME":
+		// CONSUME <groupID> <consumerID> <topic>
+		if len(parts) < 4 {
+			fmt.Fprintln(conn, "ERROR usage: CONSUME <groupID> <consumerID> <topic>")
+			continue
+		}
+		groupID := parts[1]
+		consumerID := parts[2]
+		topic := parts[3]
+
+		g := getGroup(groupID)
+		partition, ok := g.getPartition(consumerID)
+		if !ok {
+			fmt.Fprintln(conn, "ERROR consumer not in group, JOIN first")
+			continue
+		}
+
+		l, err := getLog(topic, partition)
+		if err != nil {
+			fmt.Fprintln(conn, "ERROR", err)
+			continue
+		}
+
+			// read next unread message for this consumer
+			// for now read from offset 0 — we'll track per consumer offset next
+			msg, err := l.Read(0)
+			if err != nil {
+		fmt.Fprintln(conn, "EMPTY")
+		continue
+		}
+		fmt.Fprintln(conn, "MSG", msg)
+			default:
+				fmt.Fprintln(conn, "ERROR unknown command")
+			}
+		}
 }
 func startReplication(leaderAddr string) {
 	fmt.Println("Starting replication from", leaderAddr)
